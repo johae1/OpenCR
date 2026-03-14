@@ -203,6 +203,22 @@ bool Turtlebot3MotorDriver::write_velocity(int32_t left_value, int32_t right_val
   return ret;
 }
 
+bool Turtlebot3MotorDriver::write_pwm(int16_t left_value, int16_t right_value)
+{
+  bool ret = false;
+
+  sync_write_param.addr = 100;
+  sync_write_param.length = 2;
+  memcpy(sync_write_param.xel[LEFT].data, &left_value, sync_write_param.length);
+  memcpy(sync_write_param.xel[RIGHT].data, &right_value, sync_write_param.length);
+
+  if(dxl.syncWrite(sync_write_param)){
+    ret = true;
+  }
+
+  return ret;
+}
+
 bool Turtlebot3MotorDriver::write_profile_acceleration(uint32_t left_value, uint32_t right_value)
 {
   bool ret = false;
@@ -217,6 +233,35 @@ bool Turtlebot3MotorDriver::write_profile_acceleration(uint32_t left_value, uint
   }
 
   return ret;
+}
+
+bool Turtlebot3MotorDriver::set_operating_mode(uint8_t mode)
+{
+  bool ret = false;
+  
+  // Torque must be disabled to change operating mode
+  bool torque_state = torque_;
+  if(torque_state) set_torque(false);
+
+  sync_write_param.addr = 11;  // Operating Mode
+  sync_write_param.length = 1;
+  sync_write_param.xel[LEFT].data[0] = mode;
+  sync_write_param.xel[RIGHT].data[0] = mode;
+
+  if(dxl.syncWrite(sync_write_param)){
+    ret = true;
+  }
+
+  // Restore torque state
+  if(torque_state) set_torque(true);
+
+  return ret;
+}
+
+uint8_t Turtlebot3MotorDriver::get_operating_mode()
+{
+  // Read from left motor (assuming both motors have the same mode)
+  return dxl.readControlTableItem(ControlTableItem::OPERATING_MODE, left_wheel_id_);
 }
 
 bool Turtlebot3MotorDriver::control_motors(const float wheel_separation, float linear_value, float angular_value)
