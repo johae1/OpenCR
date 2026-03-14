@@ -39,6 +39,7 @@
 const uint8_t FIRMWARE_VER = 5; //DYNAMIXEL2Arduino v0.6.1 or higher is required.
 const uint32_t INTERVAL_MS_TO_CONTROL_MOTOR = 5;
 const uint32_t INTERVAL_MS_TO_UPDATE_CONTROL_ITEM = 5;
+const int16_t PWM_MAX = 885; // Max PWM value for XM430-W210-T and XM430-W350-T
 
 namespace TurtleBot3Core{
   void begin(const char* model_name);

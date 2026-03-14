@@ -69,12 +69,17 @@ static OpenManipulatorDriver manipulator_driver(motor_driver.getDxl());
 static const TB3ModelInfo* p_tb3_model_info;
 static float max_linear_velocity, min_linear_velocity;
 static float max_angular_velocity, min_angular_velocity;
+static int16_t max_pwm_value, min_pwm_value;
 
 static float goal_velocity[VelocityType::TYPE_NUM_MAX] = {0.0, 0.0};
 static float goal_velocity_from_cmd[MortorLocation::MOTOR_NUM_MAX] = {0.0, 0.0};
 static float goal_velocity_from_rc100[MortorLocation::MOTOR_NUM_MAX] = {0.0, 0.0};
 static float goal_velocity_from_button[MortorLocation::MOTOR_NUM_MAX] = {0.0, 0.0};
+static int16_t goal_pwm[MortorLocation::MOTOR_NUM_MAX] = {0, 0};
+static int16_t goal_pwm_from_cmd[MortorLocation::MOTOR_NUM_MAX] = {0, 0};
+static int16_t goal_pwm_from_button[MortorLocation::MOTOR_NUM_MAX] = {0, 0};
 
+static void update_goal_pwm_from_2values(void);
 static void update_goal_velocity_from_3values(void);
 static void test_motors_with_buttons(uint8_t buttons);
 static bool get_connection_state_with_motors();
@@ -188,6 +193,12 @@ enum ControlTableItemAddr{
   ADDR_PROFILE_ACC_L      = 174,
   ADDR_PROFILE_ACC_R      = 178,
 
+  ADDR_OPERATING_MODE     = 182,
+  ADDR_PRESENT_PWM_L      = 183, // not implented yet
+  ADDR_PRESENT_PWM_R      = 185, // not implented yet
+  ADDR_CMD_PWM_L          = 187,
+  ADDR_CMD_PWM_R          = 189,
+
   ADDR_TORQUE_JOINT             = 199,
 
   ADDR_GOAL_POSITION_JOINT_1    = 200,
@@ -287,6 +298,9 @@ typedef struct ControlItemVariables{
   int32_t cmd_vel_angular[3];
   uint32_t profile_acceleration[MortorLocation::MOTOR_NUM_MAX];
 
+  uint8_t operating_mode;
+  int16_t cmd_pwm[MortorLocation::MOTOR_NUM_MAX];
+
   bool joint_torque_enable_state;
   joint_position_info_t joint_goal_position;  
   joint_position_info_t joint_present_position;
@@ -342,6 +356,8 @@ void TurtleBot3Core::begin(const char* model_name)
   min_linear_velocity = -max_linear_velocity;
   max_angular_velocity = max_linear_velocity/p_tb3_model_info->turning_radius;
   min_angular_velocity = -max_angular_velocity;
+  max_pwm_value = PWM_MAX;
+  min_pwm_value = -PWM_MAX;
 
   bool ret; (void)ret;
   DEBUG_SERIAL_BEGIN(57600);
@@ -374,6 +390,10 @@ void TurtleBot3Core::begin(const char* model_name)
   control_items.debug_mode = false;
   control_items.is_connect_ros2_node = false;
   control_items.is_connect_manipulator = false;  
+
+  control_items.operating_mode = OperatingMode::OP_VELOCITY; // OP_VELOCITY and OP_PWM available
+  control_items.cmd_pwm[MortorLocation::LEFT] = 0;
+  control_items.cmd_pwm[MortorLocation::RIGHT] = 0;
 
   // Port begin
   dxl_slave.begin();
@@ -452,6 +472,10 @@ void TurtleBot3Core::begin(const char* model_name)
   dxl_slave.addControlItem(ADDR_PROFILE_ACC_L, control_items.profile_acceleration[MortorLocation::LEFT]);
   dxl_slave.addControlItem(ADDR_PROFILE_ACC_R, control_items.profile_acceleration[MortorLocation::RIGHT]);
 
+  dxl_slave.addControlItem(ADDR_OPERATING_MODE, control_items.operating_mode);
+  dxl_slave.addControlItem(ADDR_CMD_PWM_L, control_items.cmd_pwm[MortorLocation::LEFT]);
+  dxl_slave.addControlItem(ADDR_CMD_PWM_R, control_items.cmd_pwm[MortorLocation::RIGHT]);
+
   if (p_tb3_model_info->has_manipulator == true) {
     control_items.joint_goal_position_wr_joint = false;
     control_items.joint_goal_position_wr_gripper = false;
@@ -529,6 +553,7 @@ void TurtleBot3Core::begin(const char* model_name)
 
   // Check connection state with motors.
   if(motor_driver.is_connected() == true){
+    motor_driver.set_operating_mode(control_items.operating_mode);
     motor_driver.set_torque(true);
     control_items.device_status = STATUS_RUNNING;
     set_connection_state_with_motors(true);
@@ -618,9 +643,14 @@ void TurtleBot3Core::run()
     if(get_connection_state_with_ros2_node() == false){
       memset(goal_velocity_from_cmd, 0, sizeof(goal_velocity_from_cmd));
     }
-    update_goal_velocity_from_3values();
     if(get_connection_state_with_motors() == true){
-      motor_driver.control_motors(p_tb3_model_info->wheel_separation, goal_velocity[VelocityType::LINEAR], goal_velocity[VelocityType::ANGULAR]);
+      if(control_items.operating_mode == OperatingMode::OP_PWM){
+        update_goal_pwm_from_2values();
+        motor_driver.write_pwm(goal_pwm[MortorLocation::LEFT], goal_pwm[MortorLocation::RIGHT]);
+      }else{
+        update_goal_velocity_from_3values();
+        motor_driver.control_motors(p_tb3_model_info->wheel_separation, goal_velocity[VelocityType::LINEAR], goal_velocity[VelocityType::ANGULAR]);
+      }
     }
   }  
 }
@@ -636,6 +666,17 @@ void update_goal_velocity_from_3values(void)
   goal_velocity[VelocityType::ANGULAR] = goal_velocity_from_button[VelocityType::ANGULAR] + goal_velocity_from_cmd[VelocityType::ANGULAR] + goal_velocity_from_rc100[VelocityType::ANGULAR];
 
   sensors.setLedPattern(goal_velocity[VelocityType::LINEAR], goal_velocity[VelocityType::ANGULAR]);
+}
+
+
+/*******************************************************************************
+* Function definition for updating pwm values 
+* to be used for control of DYNAMIXEL(motors).
+*******************************************************************************/
+void update_goal_pwm_from_2values(void)
+{
+  goal_pwm[MortorLocation::LEFT]  = goal_pwm_from_cmd[MortorLocation::LEFT]  + goal_pwm_from_button[MortorLocation::LEFT];
+  goal_pwm[MortorLocation::RIGHT] = goal_pwm_from_cmd[MortorLocation::RIGHT] + goal_pwm_from_button[MortorLocation::RIGHT];
 }
 
 
@@ -810,6 +851,19 @@ static void dxl_slave_write_callback_func(uint16_t item_addr, uint8_t &dxl_err_c
     case ADDR_MOTOR_TORQUE:
       if(get_connection_state_with_motors() == true)
         motor_driver.set_torque(control_items.motor_torque_enable_state);
+      break;
+
+    case ADDR_OPERATING_MODE:
+      if(get_connection_state_with_motors() == true)
+        motor_driver.set_operating_mode(control_items.operating_mode);
+      break;
+
+    case ADDR_CMD_PWM_L:
+      goal_pwm_from_cmd[MortorLocation::LEFT]  = constrain(control_items.cmd_pwm[MortorLocation::LEFT],  min_pwm_value, max_pwm_value);
+      break;
+
+    case ADDR_CMD_PWM_R:
+      goal_pwm_from_cmd[MortorLocation::RIGHT] = constrain(control_items.cmd_pwm[MortorLocation::RIGHT], min_pwm_value, max_pwm_value);
       break;
 
     case ADDR_CMD_VEL_LINEAR_X:
@@ -1036,11 +1090,21 @@ void test_motors_with_buttons(uint8_t buttons)
   {    
     if (abs(saved_tick[MortorLocation::RIGHT] - current_tick[MortorLocation::RIGHT]) <= diff_encoder)
     {
+      if (control_items.operating_mode == OperatingMode::OP_PWM){
+        goal_pwm_from_button[MortorLocation::LEFT]  = 300;
+        goal_pwm_from_button[MortorLocation::RIGHT] = 300;
+      }else{
       goal_velocity_from_button[VelocityType::LINEAR]  = 0.05;
+      }
     }
     else
     {
-      goal_velocity_from_button[VelocityType::LINEAR]  = 0.0;
+      if (control_items.operating_mode == OperatingMode::OP_PWM){
+        goal_pwm_from_button[MortorLocation::LEFT]  = 0;
+        goal_pwm_from_button[MortorLocation::RIGHT] = 0;
+      }else{
+        goal_velocity_from_button[VelocityType::LINEAR]  = 0.0;
+      }
       move[VelocityType::LINEAR] = false;
     }
   }
@@ -1048,11 +1112,21 @@ void test_motors_with_buttons(uint8_t buttons)
   {   
     if (abs(saved_tick[MortorLocation::RIGHT] - current_tick[MortorLocation::RIGHT]) <= diff_encoder)
     {
-      goal_velocity_from_button[VelocityType::ANGULAR]= -0.7;
+      if (control_items.operating_mode == OperatingMode::OP_PWM){
+        goal_pwm_from_button[MortorLocation::LEFT]  = 300;
+        goal_pwm_from_button[MortorLocation::RIGHT] = -300;
+      }else{
+        goal_velocity_from_button[VelocityType::ANGULAR]= -0.7;
+      }
     }
     else
     {
-      goal_velocity_from_button[VelocityType::ANGULAR]  = 0.0;
+      if (control_items.operating_mode == OperatingMode::OP_PWM){
+        goal_pwm_from_button[MortorLocation::LEFT]  = 0;
+        goal_pwm_from_button[MortorLocation::RIGHT] = 0;
+      }else{
+        goal_velocity_from_button[VelocityType::ANGULAR]= 0.0;
+      }
       move[VelocityType::ANGULAR] = false;
     }
   }

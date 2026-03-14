@@ -54,7 +54,11 @@ class Turtlebot3MotorDriver
   bool read_profile_acceleration(uint32_t &left_value, uint32_t &right_value);
   
   bool write_velocity(int32_t left_value, int32_t right_value);
+  bool write_pwm(int16_t left_value, int16_t right_value);
   bool write_profile_acceleration(uint32_t left_value, uint32_t right_value);
+
+  bool set_operating_mode(uint8_t mode);
+  uint8_t get_operating_mode();
 
   bool control_motors(const float wheel_separation, float linear_value, float angular_value);
 
