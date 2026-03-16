@@ -103,6 +103,43 @@ static Turtlebot3Diagnosis diagnosis;
 static Turtlebot3Controller controllers;
 
 /*******************************************************************************
+* Declaration for optional onboard-segway-controller
+*******************************************************************************/
+// constants
+static const bool enable_onboard_segway_ctrl = false;
+static const bool segway_enable_auto_trim = true;
+static const bool segway_enable_integrator = true;
+static const float segway_k_ext_default[4] = {-3.2030f, -6.3362f, -0.7768f, -2.7468f};
+static const float segway_ts = (float)INTERVAL_MS_TO_CONTROL_MOTOR * 0.001f;
+static const float segway_f_grenz = 10.0f;
+static const float segway_phi_max_rad = 15.0f * (PI / 180.0f);
+static const float segway_u_max = 0.22f;
+static const float segway_x_err_max = 0.4f;
+static const float segway_turn_gain = 60.0f;
+// static const float s_dot_ref = 0.0f;
+static const float segway_calib_phi_window_rad = 5.0f * (PI / 180.0f);
+// static const float segway_calib_s_dot_window_mps = 0.2f;
+static const uint16_t segway_calib_samples_target = 1000;
+// variables
+static float segway_lp_b0 = 0.0f;
+static float segway_lp_b1 = 0.0f;
+static float segway_lp_a1 = 0.0f;
+static float segway_lp_x_prev = 0.0f;
+static float segway_lp_y_prev = 0.0f;
+static float segway_x_err = 0.0f;
+static bool segway_active = false;
+static bool segway_calib_done = false;
+static bool segway_calib_wait_printed = false;
+static uint16_t segway_calib_samples = 0;
+static float segway_calib_sum_phi = 0.0f;
+static float segway_calib_sum_s_dot = 0.0f;
+static float segway_phi_trim_rad = 0.0f;
+static float segway_s_dot_bias_mps = 0.0f;
+
+static void init_segway_controller(void);
+static void update_goal_pwm_from_segway_controller(void);
+
+/*******************************************************************************
 * Declaration for DYNAMIXEL Slave Function
 *******************************************************************************/
 #define SERIAL_DXL_SLAVE Serial
@@ -255,6 +292,12 @@ enum ControlTableItemAddr{
   ADDR_GOAL_CURRENT_WR_GRIPPER  = 343,
   ADDR_GOAL_CURRENT_RD          = 344,
 
+  ADDR_SEGWAY_CTRL_ENABLE = 348,
+  ADDR_SEGWAY_K_EXT_1     = 352,
+  ADDR_SEGWAY_K_EXT_2     = 356,
+  ADDR_SEGWAY_K_EXT_3     = 360,
+  ADDR_SEGWAY_K_EXT_4     = 364,
+
 };
 
 typedef struct ControlItemVariables{
@@ -326,6 +369,9 @@ typedef struct ControlItemVariables{
   bool joint_goal_current_wr_gripper;
   bool joint_goal_current_rd;
 
+  bool segway_ctrl_enable;
+  float segway_k_ext[4];
+
 }ControlItemVariables;
 
 static ControlItemVariables control_items;
@@ -387,6 +433,12 @@ void TurtleBot3Core::begin(const char* model_name)
   DEBUG_PRINT("Dynamixel2Arduino Item Max : ");
   DEBUG_PRINTLN(CONTROL_ITEM_MAX);
 
+  if (enable_onboard_segway_ctrl == true) {
+    DEBUG_PRINTLN("Onboard Segway Controller : Enabled");
+  } else {
+    DEBUG_PRINTLN("Onboard Segway Controller : Disabled");
+  }
+
   control_items.debug_mode = false;
   control_items.is_connect_ros2_node = false;
   control_items.is_connect_manipulator = false;  
@@ -394,6 +446,8 @@ void TurtleBot3Core::begin(const char* model_name)
   control_items.operating_mode = OperatingMode::OP_VELOCITY; // OP_VELOCITY and OP_PWM available
   control_items.cmd_pwm[MortorLocation::LEFT] = 0;
   control_items.cmd_pwm[MortorLocation::RIGHT] = 0;
+  control_items.segway_ctrl_enable = enable_onboard_segway_ctrl;
+  memcpy(control_items.segway_k_ext, segway_k_ext_default, sizeof(control_items.segway_k_ext));
 
   // Port begin
   dxl_slave.begin();
@@ -475,6 +529,12 @@ void TurtleBot3Core::begin(const char* model_name)
   dxl_slave.addControlItem(ADDR_OPERATING_MODE, control_items.operating_mode);
   dxl_slave.addControlItem(ADDR_CMD_PWM_L, control_items.cmd_pwm[MortorLocation::LEFT]);
   dxl_slave.addControlItem(ADDR_CMD_PWM_R, control_items.cmd_pwm[MortorLocation::RIGHT]);
+
+  dxl_slave.addControlItem(ADDR_SEGWAY_CTRL_ENABLE, control_items.segway_ctrl_enable);
+  dxl_slave.addControlItem(ADDR_SEGWAY_K_EXT_1, control_items.segway_k_ext[0]);
+  dxl_slave.addControlItem(ADDR_SEGWAY_K_EXT_2, control_items.segway_k_ext[1]);
+  dxl_slave.addControlItem(ADDR_SEGWAY_K_EXT_3, control_items.segway_k_ext[2]);
+  dxl_slave.addControlItem(ADDR_SEGWAY_K_EXT_4, control_items.segway_k_ext[3]);
 
   if (p_tb3_model_info->has_manipulator == true) {
     control_items.joint_goal_position_wr_joint = false;
@@ -587,6 +647,9 @@ void TurtleBot3Core::begin(const char* model_name)
   sensors.initIMU();
   sensors.calibrationGyro();
 
+  // Init Segway controller
+  init_segway_controller();
+
   //To indicate that the initialization is complete.
   sensors.makeMelody(1); 
 
@@ -645,7 +708,10 @@ void TurtleBot3Core::run()
     }
     if(get_connection_state_with_motors() == true){
       if(control_items.operating_mode == OperatingMode::OP_PWM){
-        update_goal_pwm_from_2values();
+        if (control_items.segway_ctrl_enable == true)
+          update_goal_pwm_from_segway_controller();
+        else
+          update_goal_pwm_from_2values();
         motor_driver.write_pwm(goal_pwm[MortorLocation::LEFT], goal_pwm[MortorLocation::RIGHT]);
       }else{
         update_goal_velocity_from_3values();
@@ -677,6 +743,135 @@ void update_goal_pwm_from_2values(void)
 {
   goal_pwm[MortorLocation::LEFT]  = goal_pwm_from_cmd[MortorLocation::LEFT]  + goal_pwm_from_button[MortorLocation::LEFT];
   goal_pwm[MortorLocation::RIGHT] = goal_pwm_from_cmd[MortorLocation::RIGHT] + goal_pwm_from_button[MortorLocation::RIGHT];
+}
+
+
+/*******************************************************************************
+* Function definition for initializing onboard segway controller 
+* to be used for control of DYNAMIXEL(motors).
+*******************************************************************************/
+void init_segway_controller(void)
+{
+  const float omega_c = 2.0f * PI * segway_f_grenz;
+  const float k = omega_c * segway_ts;
+  const float den = 2.0f + k;
+
+  segway_lp_b0 = k / den;
+  segway_lp_b1 = k / den;
+  segway_lp_a1 = -(2.0f - k) / den;
+  segway_lp_x_prev = 0.0f;
+  segway_lp_y_prev = 0.0f;
+  segway_x_err = 0.0f;
+}
+
+
+/*******************************************************************************
+* Function definition for updating pwm values with onboard segway controller 
+* to be used for control of DYNAMIXEL(motors).
+*******************************************************************************/
+void update_goal_pwm_from_segway_controller(void)
+{
+  // Get phi and phi_dot from IMU
+  const float w = control_items.orientation[0];
+  const float x = control_items.orientation[1];
+  const float y = control_items.orientation[2];
+  const float z = control_items.orientation[3];
+  const float sin_pitch = constrain(2.0f * (w * y - z * x), -1.0f, 1.0f);
+  const float phi = asinf(sin_pitch);
+  const float phi_dot = control_items.angular_vel[1];
+
+  // Get s_dot from wheel velocity
+  const float present_vel_l = (float)control_items.present_velocity[MortorLocation::LEFT];
+  const float present_vel_r = (float)control_items.present_velocity[MortorLocation::RIGHT];
+  const float present_vel_avg = 0.5f * (present_vel_l + present_vel_r);
+  const float wheel_to_mps = 0.229f * (2.0f * PI / 60.0f) * p_tb3_model_info->wheel_radius;
+  const float s_dot_raw = present_vel_avg * wheel_to_mps;
+  // Filter s_dot with low-pass filter
+  const float s_dot = segway_lp_b0 * s_dot_raw + segway_lp_b1 * segway_lp_x_prev - segway_lp_a1 * segway_lp_y_prev;
+  segway_lp_x_prev = s_dot_raw;
+  segway_lp_y_prev = s_dot;
+
+  // Calibration for trim values of phi and s_dot
+  if (segway_enable_auto_trim == true && segway_calib_done == false) {
+    const bool stable_pose = (fabsf(phi) < segway_calib_phi_window_rad);
+    // const bool stable_vel = (fabsf(s_dot) < segway_calib_s_dot_window_mps);
+
+    if (stable_pose == true /*&& stable_vel == true*/) {
+      segway_calib_samples++;
+      segway_calib_sum_phi += phi;
+      segway_calib_sum_s_dot += s_dot;
+
+      if (segway_calib_samples >= segway_calib_samples_target) {
+        const float inv_n = 1.0f / (float)segway_calib_samples;
+        segway_phi_trim_rad = segway_calib_sum_phi * inv_n;
+        segway_s_dot_bias_mps = segway_calib_sum_s_dot * inv_n;
+        segway_calib_done = true;
+        DEBUG_PRINT("Segway trim ready. phi_trim[deg]=");
+        DEBUG_PRINT(segway_phi_trim_rad * 180.0f / PI);
+        DEBUG_PRINT(", s_dot_bias[m/s]=");
+        DEBUG_PRINTLN(segway_s_dot_bias_mps);
+        sensors.makeMelody(1); 
+      }
+    } else {
+      segway_calib_samples = 0;
+      segway_calib_sum_phi = 0.0f;
+      segway_calib_sum_s_dot = 0.0f;
+    }
+
+    if (segway_calib_wait_printed == false) {
+      DEBUG_PRINTLN("Segway trim: waiting for stable upright pose...");
+      segway_calib_wait_printed = true;
+    }
+
+    segway_x_err = 0.0f;
+    goal_pwm[MortorLocation::LEFT] = 0;
+    goal_pwm[MortorLocation::RIGHT] = 0;
+    return;
+  }
+  const float s_dot_cal = s_dot /* - segway_s_dot_bias_mps */;
+  const float phi_cal = phi - segway_phi_trim_rad;
+
+  // Check if phi is out of range for safety
+  if (fabsf(phi_cal) > segway_phi_max_rad) {
+    if (segway_active == true) {
+      DEBUG_PRINTLN("Segway: phi out of range, PWM -> 0");
+    }
+    segway_active = false;
+    segway_x_err = 0.0f;
+    goal_pwm[MortorLocation::LEFT] = 0;
+    goal_pwm[MortorLocation::RIGHT] = 0;
+    return;
+  }
+  segway_active = true;
+
+  // Dynamischer Sollwert aus ROS2 cmd_vel: linear.x [m/s], angular.z [rad/s]
+  const float s_dot_ref_dyn = goal_velocity_from_cmd[VelocityType::LINEAR];
+  const float ang_vel_cmd   = goal_velocity_from_cmd[VelocityType::ANGULAR];
+
+  // Integrator for s_dot error
+  if (segway_enable_integrator == true) {
+    segway_x_err += (s_dot_cal - s_dot_ref_dyn) * segway_ts;
+    segway_x_err = constrain(segway_x_err, -segway_x_err_max, segway_x_err_max);
+  } else {
+    segway_x_err = 0.0f;
+  }
+
+  float u = -(  control_items.segway_k_ext[0] * s_dot_cal 
+              + control_items.segway_k_ext[1] * phi_cal 
+              + control_items.segway_k_ext[2] * phi_dot 
+              + control_items.segway_k_ext[3] * segway_x_err);
+  u = constrain(u, -segway_u_max, segway_u_max);
+
+  int16_t pwm_bal = 0;
+  if (fabsf(segway_u_max) > 1e-6f) {
+    pwm_bal = (int16_t)roundf((u / segway_u_max) * (float)max_pwm_value);
+  }
+  pwm_bal = constrain(pwm_bal, min_pwm_value, max_pwm_value);
+
+    const int16_t pwm_turn = (int16_t)constrain(roundf(ang_vel_cmd * segway_turn_gain), (float)min_pwm_value, (float)max_pwm_value);
+
+  goal_pwm[MortorLocation::LEFT]  = (int16_t)constrain((float)(pwm_bal - pwm_turn), (float)min_pwm_value, (float)max_pwm_value);
+  goal_pwm[MortorLocation::RIGHT] = (int16_t)constrain((float)(pwm_bal + pwm_turn), (float)min_pwm_value, (float)max_pwm_value);
 }
 
 
@@ -878,6 +1073,26 @@ static void dxl_slave_write_callback_func(uint16_t item_addr, uint8_t &dxl_err_c
     case ADDR_PROFILE_ACC_R:
       if(get_connection_state_with_motors() == true)
         motor_driver.write_profile_acceleration(control_items.profile_acceleration[MortorLocation::LEFT], control_items.profile_acceleration[MortorLocation::RIGHT]);
+      break;
+
+    case ADDR_SEGWAY_CTRL_ENABLE:
+      segway_active = false;
+      segway_x_err = 0.0f;
+      init_segway_controller();
+      segway_calib_done = false;
+      segway_calib_wait_printed = false;
+      segway_calib_samples = 0;
+      segway_calib_sum_phi = 0.0f;
+      segway_calib_sum_s_dot = 0.0f;
+      segway_s_dot_bias_mps = 0.0f;
+      break;
+
+    case ADDR_SEGWAY_K_EXT_1:
+    case ADDR_SEGWAY_K_EXT_2:
+    case ADDR_SEGWAY_K_EXT_3:
+    case ADDR_SEGWAY_K_EXT_4:
+      segway_x_err = 0.0f;
+      init_segway_controller();
       break;
 
     case ADDR_TORQUE_JOINT:
