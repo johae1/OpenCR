@@ -108,17 +108,18 @@ static Turtlebot3Controller controllers;
 // constants
 static const bool enable_onboard_segway_ctrl = false;
 static const bool segway_enable_auto_trim = true;
-static const bool segway_enable_integrator = false;
-static const float segway_k_ext_default[4] = {-2.5604f, -5.5234f, -0.6686f, 0.8714f};
+static const bool segway_enable_integrator = true;
+static const float segway_k_ext_default[4] = {-3.2030f, -6.3362f, -0.7768f, -2.7468f};
 static const float segway_ts = (float)INTERVAL_MS_TO_CONTROL_MOTOR * 0.001f;
 static const float segway_f_grenz = 10.0f;
 static const float segway_phi_max_rad = 15.0f * (PI / 180.0f);
-static const float segway_u_max = 0.2f;
-static const float segway_x_err_max = 0.5f;
-static const float s_dot_ref = 0.0f;
-static const float segway_calib_phi_window_rad = 2.0f * (PI / 180.0f);
+static const float segway_u_max = 0.22f;
+static const float segway_x_err_max = 0.4f;
+static const float segway_turn_gain = 60.0f;
+// static const float s_dot_ref = 0.0f;
+static const float segway_calib_phi_window_rad = 5.0f * (PI / 180.0f);
 // static const float segway_calib_s_dot_window_mps = 0.2f;
-static const uint16_t segway_calib_samples_target = 500;
+static const uint16_t segway_calib_samples_target = 1000;
 // variables
 static float segway_lp_b0 = 0.0f;
 static float segway_lp_b1 = 0.0f;
@@ -809,6 +810,7 @@ void update_goal_pwm_from_segway_controller(void)
         DEBUG_PRINT(segway_phi_trim_rad * 180.0f / PI);
         DEBUG_PRINT(", s_dot_bias[m/s]=");
         DEBUG_PRINTLN(segway_s_dot_bias_mps);
+        sensors.makeMelody(1); 
       }
     } else {
       segway_calib_samples = 0;
@@ -842,9 +844,13 @@ void update_goal_pwm_from_segway_controller(void)
   }
   segway_active = true;
 
+  // Dynamischer Sollwert aus ROS2 cmd_vel: linear.x [m/s], angular.z [rad/s]
+  const float s_dot_ref_dyn = goal_velocity_from_cmd[VelocityType::LINEAR];
+  const float ang_vel_cmd   = goal_velocity_from_cmd[VelocityType::ANGULAR];
+
   // Integrator for s_dot error
   if (segway_enable_integrator == true) {
-    segway_x_err += (s_dot_cal - s_dot_ref) * segway_ts;
+    segway_x_err += (s_dot_cal - s_dot_ref_dyn) * segway_ts;
     segway_x_err = constrain(segway_x_err, -segway_x_err_max, segway_x_err_max);
   } else {
     segway_x_err = 0.0f;
@@ -862,8 +868,10 @@ void update_goal_pwm_from_segway_controller(void)
   }
   pwm_bal = constrain(pwm_bal, min_pwm_value, max_pwm_value);
 
-  goal_pwm[MortorLocation::LEFT]  = (int16_t)constrain((float)pwm_bal, (float)min_pwm_value, (float)max_pwm_value);
-  goal_pwm[MortorLocation::RIGHT] = (int16_t)constrain((float)pwm_bal, (float)min_pwm_value, (float)max_pwm_value);
+    const int16_t pwm_turn = (int16_t)constrain(roundf(ang_vel_cmd * segway_turn_gain), (float)min_pwm_value, (float)max_pwm_value);
+
+  goal_pwm[MortorLocation::LEFT]  = (int16_t)constrain((float)(pwm_bal - pwm_turn), (float)min_pwm_value, (float)max_pwm_value);
+  goal_pwm[MortorLocation::RIGHT] = (int16_t)constrain((float)(pwm_bal + pwm_turn), (float)min_pwm_value, (float)max_pwm_value);
 }
 
 
