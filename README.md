@@ -1,6 +1,11 @@
 # OpenCR: Open Source Control Module for ROS [![Build Status](https://travis-ci.org/ROBOTIS-GIT/OpenCR.svg?branch=master)](https://travis-ci.org/ROBOTIS-GIT/OpenCR/)
 ![](http://emanual.robotis.com/assets/images/parts/controller/opencr10/opencr_product.png)
 
+## Onboard Segway Controller (bundle)
+- *Custom turtlebot3_node and turtlebot3_bringup:* [custom_ros2_package](https://github.com/johae1/turtlebot3)
+- *Custom message added to turtlebot3_msgs:* [custom turtlebot3_msgs](https://github.com/johae1/turtlebot3_msgs)
+- *Custom firmware with onboard segway-control:* [custom_opencr_turtlebot3_firmware](https://github.com/johae1/OpenCR)
+
 ## ROBOTIS e-Manual for OpenCR
 - [ROBOTIS e-Manual for OpenCR](http://emanual.robotis.com/docs/en/parts/controller/opencr10/)
 
