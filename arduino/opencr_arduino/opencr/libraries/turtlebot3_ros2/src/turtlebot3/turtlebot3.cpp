@@ -106,7 +106,7 @@ static Turtlebot3Controller controllers;
 * Declaration for optional onboard-segway-controller
 *******************************************************************************/
 // constants
-static const bool enable_onboard_segway_ctrl = true;
+static const bool enable_onboard_segway_ctrl = false;
 static const bool segway_enable_auto_trim = true;
 static const bool segway_enable_integrator = false;
 static const float segway_k_ext_default[4] = {-2.5604f, -5.5234f, -0.6686f, 0.8714f};
@@ -116,9 +116,9 @@ static const float segway_phi_max_rad = 15.0f * (PI / 180.0f);
 static const float segway_u_max = 0.2f;
 static const float segway_x_err_max = 0.5f;
 static const float s_dot_ref = 0.0f;
-static const float segway_calib_phi_window_rad = 1.0f * (PI / 180.0f);
-static const float segway_calib_s_dot_window_mps = 0.05f;
-static const uint16_t segway_calib_samples_target = 1000;
+static const float segway_calib_phi_window_rad = 2.0f * (PI / 180.0f);
+// static const float segway_calib_s_dot_window_mps = 0.2f;
+static const uint16_t segway_calib_samples_target = 500;
 // variables
 static float segway_lp_b0 = 0.0f;
 static float segway_lp_b1 = 0.0f;
@@ -442,7 +442,7 @@ void TurtleBot3Core::begin(const char* model_name)
   control_items.is_connect_ros2_node = false;
   control_items.is_connect_manipulator = false;  
 
-  control_items.operating_mode = OperatingMode::OP_PWM; // OP_VELOCITY and OP_PWM available
+  control_items.operating_mode = OperatingMode::OP_VELOCITY; // OP_VELOCITY and OP_PWM available
   control_items.cmd_pwm[MortorLocation::LEFT] = 0;
   control_items.cmd_pwm[MortorLocation::RIGHT] = 0;
   control_items.segway_ctrl_enable = enable_onboard_segway_ctrl;
@@ -793,9 +793,9 @@ void update_goal_pwm_from_segway_controller(void)
   // Calibration for trim values of phi and s_dot
   if (segway_enable_auto_trim == true && segway_calib_done == false) {
     const bool stable_pose = (fabsf(phi) < segway_calib_phi_window_rad);
-    const bool stable_vel = (fabsf(s_dot) < segway_calib_s_dot_window_mps);
+    // const bool stable_vel = (fabsf(s_dot) < segway_calib_s_dot_window_mps);
 
-    if (stable_pose == true && stable_vel == true) {
+    if (stable_pose == true /*&& stable_vel == true*/) {
       segway_calib_samples++;
       segway_calib_sum_phi += phi;
       segway_calib_sum_s_dot += s_dot;
@@ -826,7 +826,7 @@ void update_goal_pwm_from_segway_controller(void)
     goal_pwm[MortorLocation::RIGHT] = 0;
     return;
   }
-  const float s_dot_cal = s_dot - segway_s_dot_bias_mps;
+  const float s_dot_cal = s_dot /* - segway_s_dot_bias_mps */;
   const float phi_cal = phi - segway_phi_trim_rad;
 
   // Check if phi is out of range for safety
